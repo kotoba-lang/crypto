@@ -55,3 +55,95 @@
         {:keys [ciphertext tag]} (crypto/encrypt aead key nonce pt [])]
     (is (thrown? clojure.lang.ExceptionInfo
                 (crypto/decrypt aead key nonce ciphertext (byte-array [0 0 0]) [])))))
+
+;; ---------- provider metadata + envelope emission ----------
+
+(def mock-provider
+  {:provider/id :kotoba.lang.crypto/mock-xor-hmac
+   :provider/fips-validated false
+   :provider/algorithms [:xor-hmac-sha256]})
+
+(deftest provider-registration-validates
+  (testing "valid provider registers"
+    (let [reg (crypto/aead-provider (crypto/mock-aead) mock-provider)]
+      (is (= mock-provider (:provider reg)))))
+  (testing "missing fips flag rejected"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (crypto/aead-provider (crypto/mock-aead)
+                                       {:provider/id :no-fips-flag}))))
+  (testing "non-boolean fips flag rejected"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (crypto/aead-provider (crypto/mock-aead)
+                                       {:provider/id :bad
+                                        :provider/fips-validated :yes}))))
+  (testing "missing provider id rejected"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (crypto/aead-provider (crypto/mock-aead)
+                                       {:provider/fips-validated false}))))
+  (testing "non-AEAD implementation rejected"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (crypto/aead-provider :not-an-aead mock-provider)))))
+
+(deftest envelope-metadata-shape
+  (let [meta (crypto/envelope-metadata mock-provider [:xor-hmac-sha256]
+                                       {:epoch 2 :kem? true :hybrid? true})]
+    (is (= {:envelope/algorithms [:xor-hmac-sha256]
+            :envelope/provider {:provider/id :kotoba.lang.crypto/mock-xor-hmac
+                                :provider/fips-validated false}
+            :envelope/epoch 2
+            :envelope/kem? true
+            :envelope/hybrid? true}
+           meta))))
+
+(deftest envelope-metadata-epoch-defaults
+  (let [meta (crypto/envelope-metadata mock-provider [:xor-hmac-sha256])]
+    (is (= 0 (:envelope/epoch meta)))
+    (is (false? (:envelope/kem? meta)))
+    (is (false? (:envelope/hybrid? meta))))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (crypto/envelope-metadata mock-provider [:xor-hmac-sha256]
+                                         {:epoch "1"})))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (crypto/envelope-metadata mock-provider []))))
+
+(deftest seal-emits-provider-metadata
+  (let [reg (crypto/aead-provider (crypto/mock-aead) mock-provider)
+        key [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16]
+        nonce [255 254 253 252]
+        pt [10 20 30 40 50]
+        aad [99 98]
+        env (crypto/seal reg key nonce pt aad)]
+    (testing "envelope metadata emitted on every seal"
+      ;; This exact :envelope/* shape must pass
+      ;; kotoba.security.crypto-policy/check-envelope under :crypto-agile
+      ;; (cross-checked in kotoba-lang/security hybrid_vectors_structure_test).
+      (is (= {:envelope/algorithms [:xor-hmac-sha256]
+              :envelope/provider {:provider/id :kotoba.lang.crypto/mock-xor-hmac
+                                  :provider/fips-validated false}
+              :envelope/epoch 0
+              :envelope/kem? false
+              :envelope/hybrid? false}
+             (select-keys env [:envelope/algorithms :envelope/provider
+                               :envelope/epoch :envelope/kem? :envelope/hybrid?]))))
+    (testing "ciphertext round-trips through unseal"
+      (is (= (count pt) (count (bytes->vec (:ciphertext env)))))
+      (is (= pt (bytes->vec (crypto/unseal reg key nonce env aad)))))
+    (testing "epoch/kem/hybrid opts flow into the envelope"
+      (let [env2 (crypto/seal reg key nonce pt aad
+                              {:epoch 3 :kem? true :hybrid? true})]
+        (is (= 3 (:envelope/epoch env2)))
+        (is (true? (:envelope/kem? env2)))
+        (is (true? (:envelope/hybrid? env2)))))))
+
+(deftest seal-requires-algorithms
+  (let [reg (crypto/aead-provider (crypto/mock-aead)
+                                  {:provider/id :no-algos
+                                   :provider/fips-validated false})]
+    ;; provider declares no :provider/algorithms and none passed in opts
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (crypto/seal reg [1 2 3 4] [9 9] [1 2 3] [])))
+    ;; explicit :algorithms opt works
+    (is (= [:aes-256-gcm]
+           (:envelope/algorithms
+            (crypto/seal reg [1 2 3 4] [9 9] [1 2 3] []
+                         {:algorithms [:aes-256-gcm]}))))))

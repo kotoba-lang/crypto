@@ -80,3 +80,83 @@
         (if (= (vec expected) (vec tag))
           (byte-array (map bit-xor ciphertext (cycle key)))
           (throw (ex-info "crypto: AEAD auth failed" {})))))))
+
+;; ---------- provider metadata + envelope emission ----------
+;; Crypto-agility contract (kotoba-lang/kotoba#264): every produced envelope
+;; must carry provider and algorithm metadata so the security policy gate
+;; (kotoba.security.crypto-policy/check-envelope) can validate it under
+;; :crypto-agile / :hybrid-required / :fips-required modes.
+
+(defn validate-provider
+  "Validates a host-injected provider record. Required: :provider/id (keyword)
+  and :provider/fips-validated (boolean — an explicit false is required; FIPS
+  status must never be implicit). Optional: :provider/algorithms (non-empty
+  vector of keywords) naming the algorithms the provider implements. Returns
+  the provider, or throws ex-info."
+  [provider]
+  (when-not (map? provider)
+    (throw (ex-info "crypto: provider record required" {:provider provider})))
+  (when-not (keyword? (:provider/id provider))
+    (throw (ex-info "crypto: provider id required" {:provider provider})))
+  (when-not (boolean? (:provider/fips-validated provider))
+    (throw (ex-info "crypto: provider fips-validated flag required"
+                    {:provider provider})))
+  (when (and (contains? provider :provider/algorithms)
+             (not (and (vector? (:provider/algorithms provider))
+                       (seq (:provider/algorithms provider))
+                       (every? keyword? (:provider/algorithms provider)))))
+    (throw (ex-info "crypto: provider algorithms must be a non-empty vector of keywords"
+                    {:provider provider})))
+  provider)
+
+(defn envelope-metadata
+  "Builds the :envelope/* metadata map every produced envelope must carry:
+  {:envelope/algorithms [..] :envelope/provider {:provider/id .. :provider/fips-validated ..}
+   :envelope/epoch int :envelope/kem? bool :envelope/hybrid? bool}.
+  `algorithms` is a non-empty seq of keywords; `opts` may set :epoch
+  (default 0), :kem? and :hybrid? (default false). Validates the provider."
+  ([provider algorithms] (envelope-metadata provider algorithms {}))
+  ([provider algorithms {:keys [epoch kem? hybrid?]
+                         :or {epoch 0 kem? false hybrid? false}}]
+   (validate-provider provider)
+   (when-not (and (seq algorithms) (every? keyword? algorithms))
+     (throw (ex-info "crypto: envelope algorithms required" {:algorithms algorithms})))
+   (when-not (int? epoch)
+     (throw (ex-info "crypto: envelope epoch must be an int" {:epoch epoch})))
+   {:envelope/algorithms (vec algorithms)
+    :envelope/provider (select-keys provider [:provider/id :provider/fips-validated])
+    :envelope/epoch epoch
+    :envelope/kem? (boolean kem?)
+    :envelope/hybrid? (boolean hybrid?)}))
+
+(defn aead-provider
+  "Registers a host-injected AEAD cipher with its provider metadata (the
+  injection boundary). Validates the provider record at registration —
+  hosts cannot inject a cipher without declaring :provider/id and
+  :provider/fips-validated. Returns {:aead .. :provider ..}."
+  [aead provider]
+  (when-not (satisfies? IAEAD aead)
+    (throw (ex-info "crypto: AEAD implementation required" {:aead aead})))
+  {:aead aead :provider (validate-provider provider)})
+
+(defn seal
+  "Encrypts with a registered AEAD provider (see `aead-provider`) and returns
+  an envelope map carrying the ciphertext plus :envelope/* metadata:
+  {:ciphertext bytes :tag bytes :envelope/algorithms .. :envelope/provider ..
+   :envelope/epoch .. :envelope/kem? .. :envelope/hybrid? ..}.
+  Algorithms default to the provider's :provider/algorithms; `opts` may set
+  :algorithms, :epoch (default 0), :kem?, :hybrid? (default false)."
+  ([registered key nonce plaintext aad]
+   (seal registered key nonce plaintext aad {}))
+  ([registered key nonce plaintext aad opts]
+   (let [{:keys [aead provider]} registered
+         algorithms (or (:algorithms opts) (:provider/algorithms provider))]
+     (merge (encrypt aead key nonce plaintext aad)
+            (envelope-metadata provider algorithms opts)))))
+
+(defn unseal
+  "Decrypts an envelope map produced by `seal`. Returns plaintext bytes, or
+  throws on auth failure."
+  [registered key nonce envelope aad]
+  (decrypt (:aead registered) key nonce
+           (:ciphertext envelope) (:tag envelope) aad))
