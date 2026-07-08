@@ -1,11 +1,15 @@
 (ns kotoba.lang.crypto-test
   (:require [clojure.test :refer [deftest is testing]]
             [kotoba.lang.crypto :as crypto])
-  (:import [java.security MessageDigest]))
+  #?(:clj (:import [java.security MessageDigest])))
 
-(defn- expected-sha256 [data]
-  (let [md (MessageDigest/getInstance "SHA-256")]
-    (.digest md (byte-array data))))
+(defn- expected-sha256
+  "Independent cross-check against the JDK's own SHA-256 provider (:clj
+  only — no cljs equivalent to cross-check against here)."
+  [data]
+  #?(:clj (let [md (MessageDigest/getInstance "SHA-256")]
+            (.digest md (byte-array data)))
+     :cljs nil))
 
 (defn- bytes->vec [b] (vec b))
 
@@ -13,7 +17,7 @@
   (let [d [104 101 108 108 111]  ; "hello"
         h (crypto/hash d)]
     (is (= 32 (count (bytes->vec h))))
-    (is (= (bytes->vec (expected-sha256 d)) (bytes->vec h)))))
+    #?(:clj (is (= (bytes->vec (expected-sha256 d)) (bytes->vec h))))))
 
 (deftest sha512-hash
   (let [d [104 101 108 108 111]
@@ -53,8 +57,8 @@
         nonce [9 9]
         pt [1 2 3]
         {:keys [ciphertext tag]} (crypto/encrypt aead key nonce pt [])]
-    (is (thrown? clojure.lang.ExceptionInfo
-                (crypto/decrypt aead key nonce ciphertext (byte-array [0 0 0]) [])))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
+                (crypto/decrypt aead key nonce ciphertext #?(:clj (byte-array [0 0 0]) :cljs [0 0 0]) [])))))
 
 ;; ---------- provider metadata + envelope emission ----------
 
@@ -68,20 +72,20 @@
     (let [reg (crypto/aead-provider (crypto/mock-aead) mock-provider)]
       (is (= mock-provider (:provider reg)))))
   (testing "missing fips flag rejected"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (crypto/aead-provider (crypto/mock-aead)
                                        {:provider/id :no-fips-flag}))))
   (testing "non-boolean fips flag rejected"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (crypto/aead-provider (crypto/mock-aead)
                                        {:provider/id :bad
                                         :provider/fips-validated :yes}))))
   (testing "missing provider id rejected"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (crypto/aead-provider (crypto/mock-aead)
                                        {:provider/fips-validated false}))))
   (testing "non-AEAD implementation rejected"
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (crypto/aead-provider :not-an-aead mock-provider)))))
 
 (deftest envelope-metadata-shape
@@ -100,10 +104,10 @@
     (is (= 0 (:envelope/epoch meta)))
     (is (false? (:envelope/kem? meta)))
     (is (false? (:envelope/hybrid? meta))))
-  (is (thrown? clojure.lang.ExceptionInfo
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                (crypto/envelope-metadata mock-provider [:xor-hmac-sha256]
                                          {:epoch "1"})))
-  (is (thrown? clojure.lang.ExceptionInfo
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                (crypto/envelope-metadata mock-provider []))))
 
 (deftest seal-emits-provider-metadata
@@ -140,7 +144,7 @@
                                   {:provider/id :no-algos
                                    :provider/fips-validated false})]
     ;; provider declares no :provider/algorithms and none passed in opts
-    (is (thrown? clojure.lang.ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (crypto/seal reg [1 2 3 4] [9 9] [1 2 3] [])))
     ;; explicit :algorithms opt works
     (is (= [:aes-256-gcm]

@@ -12,6 +12,13 @@
              (.digest md (byte-array data)))
      :cljs (throw (ex-info "crypto: WASM/CLJS digest needs host-injected fn" {:algo algo}))))
 
+(defn- ->bytes
+  "byte-array under :clj; plain vector-of-ints under :cljs (no byte-array
+  there — see kotoba-lang/io-multiformats.core for the established
+  precedent)."
+  [xs]
+  #?(:clj (byte-array xs) :cljs (vec xs)))
+
 (def default-digest-fn
   "Default digest fn (JVM MessageDigest). On WASM, inject a host fn."
   (fn [algo data]
@@ -39,7 +46,7 @@
         opad (map bit-xor k (repeat block-size 0x5C))
         inner (hash :sha256 (concat ipad data) digest-fn)
         outer (hash :sha256 (concat opad inner) digest-fn)]
-    (byte-array outer))))
+    (->bytes outer))))
 
 (defn hkdf
   "HKDF-SHA-256: extract+expand `ikm` (input keying material) and `info` (context)
@@ -57,7 +64,7 @@
                           t' (hmac prk input digest-fn)]
                       (recur (inc i) (vec t') (conj! out t')))))
          all (apply concat blocks)]
-     (byte-array (take length all)))))
+     (->bytes (take length all)))))
 
 ;; ---------- AEAD (data contract; cipher is host-injected) ----------
 
@@ -72,13 +79,13 @@
   []
   (reify IAEAD
     (encrypt [_ key nonce plaintext aad]
-      (let [ct (byte-array (map bit-xor plaintext (cycle key)))
+      (let [ct (->bytes (map bit-xor plaintext (cycle key)))
             tag (hmac (vec key) (concat (vec nonce) (vec aad) (vec ct)))]
         {:ciphertext ct :tag tag}))
     (decrypt [_ key nonce ciphertext tag aad]
       (let [expected (hmac (vec key) (concat (vec nonce) (vec aad) (vec ciphertext)))]
         (if (= (vec expected) (vec tag))
-          (byte-array (map bit-xor ciphertext (cycle key)))
+          (->bytes (map bit-xor ciphertext (cycle key)))
           (throw (ex-info "crypto: AEAD auth failed" {})))))))
 
 ;; ---------- provider metadata + envelope emission ----------
