@@ -5,7 +5,8 @@
   interface is a data contract (encrypt/decrypt return ciphertext+tag maps);
   the cipher itself is host-injected. Consumed by cacao/kotobase auth chains.
   No third-party deps; .cljc (JVM/SCI/CLJS/GraalVM/kotoba-WASM)."
-  (:refer-clojure :exclude [hash]))
+  (:refer-clojure :exclude [hash])
+  (:require [kotoba.crypto.aead :as aead-p]))
 
 (defn- jvm-digest [algo data]
   #?(:clj  (let [md (java.security.MessageDigest/getInstance algo)]
@@ -68,11 +69,14 @@
 
 ;; ---------- AEAD (data contract; cipher is host-injected) ----------
 
-(defprotocol IAEAD
-  (encrypt [aead key nonce plaintext aad]
-    "Encrypt. Returns {:ciphertext bytes :tag bytes}.")
-  (decrypt [aead key nonce ciphertext tag aad]
-    "Decrypt. Returns plaintext bytes, or throws on auth failure."))
+(def IAEAD
+  "The protocol itself lives in one repo of its own now. This name is that
+  SAME protocol, not a second one: an implementation reified against either
+  is accepted by both (ADR-2609091900)."
+  aead-p/AEAD)
+
+(def decrypt aead-p/decrypt)
+(def encrypt aead-p/encrypt)
 
 (defn mock-aead
   "A trivial AEAD for tests (XOR + HMAC tag). NOT secure — for testing only."
