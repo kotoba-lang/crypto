@@ -1,5 +1,5 @@
 (ns kotoba.lang.crypto-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotoba.lang.crypto :as crypto])
   #?(:clj (:import [java.security MessageDigest])))
 
