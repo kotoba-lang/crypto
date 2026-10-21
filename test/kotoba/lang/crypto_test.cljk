@@ -1,7 +1,25 @@
 (ns kotoba.lang.crypto-test
-  (:require [kotoba.lang.error :as kerror] [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.lang.error :as kerror] [kotoba.test :refer [deftest is testing use-fixtures]]
             [kotoba.lang.crypto :as crypto])
+  #?(:cljs (:require ["node:crypto" :as node-crypto]
+                     ["node:buffer" :refer [Buffer]]))
   #?(:clj (:import [java.security MessageDigest])))
+
+;; The CLJS contract requires an explicit digest injection. This Node test
+;; fixture supplies one; production defaults keep refusing without injection.
+#?(:cljs
+   (do
+     (def uninjected-digest crypto/default-digest-fn)
+     (defn test-digest [algorithm data]
+       (vec (.digest (.update (node-crypto/createHash
+                                (case algorithm :sha256 "sha256" :sha512 "sha512"))
+                              (Buffer.from (clj->js (vec data)))))))
+     (use-fixtures :each
+       (fn [run-test]
+         (with-redefs [crypto/default-digest-fn test-digest]
+           (run-test))))
+     (deftest default-still-refuses-without-explicit-host-injection
+       (is (thrown? js/Error (uninjected-digest :sha256 [1 2 3]))))))
 
 (defn- expected-sha256
   "Independent cross-check against the JDK's own SHA-256 provider (:clj
@@ -57,7 +75,7 @@
         nonce [9 9]
         pt [1 2 3]
         {:keys [ciphertext tag]} (crypto/encrypt aead key nonce pt [])]
-    (is (thrown? kerror/ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                 (crypto/decrypt aead key nonce ciphertext #?(:clj (byte-array [0 0 0]) :cljs [0 0 0]) [])))))
 
 ;; ---------- provider metadata + envelope emission ----------
@@ -72,20 +90,20 @@
     (let [reg (crypto/aead-provider (crypto/mock-aead) mock-provider)]
       (is (= mock-provider (:provider reg)))))
   (testing "missing fips flag rejected"
-    (is (thrown? kerror/ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                  (crypto/aead-provider (crypto/mock-aead)
                                        {:provider/id :no-fips-flag}))))
   (testing "non-boolean fips flag rejected"
-    (is (thrown? kerror/ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                  (crypto/aead-provider (crypto/mock-aead)
                                        {:provider/id :bad
                                         :provider/fips-validated :yes}))))
   (testing "missing provider id rejected"
-    (is (thrown? kerror/ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                  (crypto/aead-provider (crypto/mock-aead)
                                        {:provider/fips-validated false}))))
   (testing "non-AEAD implementation rejected"
-    (is (thrown? kerror/ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                  (crypto/aead-provider :not-an-aead mock-provider)))))
 
 (deftest envelope-metadata-shape
@@ -104,10 +122,10 @@
     (is (= 0 (:envelope/epoch meta)))
     (is (false? (:envelope/kem? meta)))
     (is (false? (:envelope/hybrid? meta))))
-  (is (thrown? kerror/ExceptionInfo
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                (crypto/envelope-metadata mock-provider [:xor-hmac-sha256]
                                          {:epoch "1"})))
-  (is (thrown? kerror/ExceptionInfo
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                (crypto/envelope-metadata mock-provider []))))
 
 (deftest seal-emits-provider-metadata
@@ -144,7 +162,7 @@
                                   {:provider/id :no-algos
                                    :provider/fips-validated false})]
     ;; provider declares no :provider/algorithms and none passed in opts
-    (is (thrown? kerror/ExceptionInfo
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs kerror/ExceptionInfo)
                  (crypto/seal reg [1 2 3 4] [9 9] [1 2 3] [])))
     ;; explicit :algorithms opt works
     (is (= [:aes-256-gcm]
